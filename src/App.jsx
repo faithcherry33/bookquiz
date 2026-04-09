@@ -1905,6 +1905,11 @@ function TeacherManageTab({ quizDataState, db, appId, showConfirm, showAlert, })
   const [renamingChapter, setRenamingChapter] = useState(null);
   const [renamingChapterInput, setRenamingChapterInput] = useState('');
   const [classifyingIndex, setClassifyingIndex] = useState(null);
+  const [expandedChapters, setExpandedChapters] = useState({});
+  const toggleChapter = (book, chapter) => {
+    const key = `${book}__${chapter}`;
+    setExpandedChapters(prev => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const sortedChapters = (bookName) =>
     Object.keys(editingData[bookName] || {}).sort((a, b) => {
@@ -2165,7 +2170,7 @@ function TeacherManageTab({ quizDataState, db, appId, showConfirm, showAlert, })
           return (
             <div key={chapterName} className="border border-slate-200 rounded-2xl overflow-hidden">
               {/* 챕터 헤더 */}
-              <div className="flex justify-between items-center p-4 bg-slate-50 border-b border-slate-100">
+              <div className="flex justify-between items-center p-4 bg-slate-50 border-b border-slate-100 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => toggleChapter(bookName, chapterName)}>
                 {renamingChapter?.book === bookName && renamingChapter?.chapter === chapterName ? (
                   <div className="flex items-center gap-2">
                     <input type="text" value={renamingChapterInput} onChange={(e) => setRenamingChapterInput(e.target.value)}
@@ -2179,12 +2184,16 @@ function TeacherManageTab({ quizDataState, db, appId, showConfirm, showAlert, })
                 )}
                 <div className="flex items-center gap-2">
                   {!(renamingChapter?.book === bookName && renamingChapter?.chapter === chapterName) && (
-                    <button onClick={() => startRenamingChapter(bookName, chapterName)} className="text-indigo-400 hover:text-indigo-600 p-1"><Edit3 size={16} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); startRenamingChapter(bookName, chapterName); }} className="text-indigo-400 hover:text-indigo-600 p-1"><Edit3 size={16} /></button>
                   )}
-                  <button onClick={() => deleteChapter(bookName, chapterName)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16} /></button>
+                  <button onClick={(e) => { e.stopPropagation(); deleteChapter(bookName, chapterName); }} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={16} /></button>
+                  <div className="text-slate-400 p-1 pointer-events-none">
+                    {expandedChapters[`${bookName}__${chapterName}`] ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                  </div>
                 </div>
               </div>
 
+              {expandedChapters[`${bookName}__${chapterName}`] && <>
               {/* 챕터 줄거리 */}
               <div className="p-4 bg-amber-50/50 border-b border-slate-100">
                 <div className="flex items-center gap-2 mb-2">
@@ -2306,6 +2315,7 @@ function TeacherManageTab({ quizDataState, db, appId, showConfirm, showAlert, })
                   <Plus size={18} /> 질문 추가하기
                 </button>
               </div>
+              </>}
             </div>
           );
         })}
