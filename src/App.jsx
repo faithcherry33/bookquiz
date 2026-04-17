@@ -22,7 +22,7 @@ import {
   deleteDoc,
 } from 'firebase/firestore';
 import {
-  BookOpen, User, CheckCircle2, XCircle, ChevronRight, LogOut, ChevronDown, ChevronUp, Loader2, Sparkles, History, Settings, Plus, Trash2, Brain, Save, Edit3, AlertTriangle, KeyRound, Search, MessageSquareHeart, Lightbulb, Check, X, Trophy, MessageCircle, BellRing
+  BookOpen, User, CheckCircle2, XCircle, ChevronRight, LogOut, ChevronDown, ChevronUp, Loader2, Sparkles, History, Settings, Plus, Trash2, Brain, Save, Edit3, AlertTriangle, KeyRound, Search, MessageSquareHeart, Lightbulb, Check, X, Trophy, MessageCircle, BellRing, Download, Upload
 } from 'lucide-react';
 
 // --- Firebase & API 설정 ---
@@ -1922,7 +1922,220 @@ function TeacherManageTab({ quizDataState, db, appId, showConfirm, showAlert, })
     const key = `${book}__${chapter}`;
     setExpandedChapters(prev => ({ ...prev, [key]: !prev[key] }));
   };
+  // 백업 목록 관리
+  const [backupList, setBackupList] = useState([]);
+  const [showBackupModal, setShowBackupModal] = useState(false);
+  const [loadingBackups, setLoadingBackups] = useState(false);
 
+  const loadBackupList = async () => {
+    setLoadingBackups(true);
+    try {
+      const { getDocs, collection: coll } = await import('firebase/firestore');
+      const snapshot = await getDocs(coll(db, 'artifacts', appId, 'public', 'data', 'quiz_config'));
+      const backups = [];
+      snapshot.forEach(d => {
+        if (d.id.startsWith('backup_')) {
+          backups.push({ id: d.id, ...d.data() });
+        }
+      });
+      backups.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+      setBackupList(backups);
+      setShowBackupModal(true);
+    } catch (e) {
+      showAlert('오류', '백업 목록을 불러오지 못했습니다.');
+    } finally {
+      setLoadingBackups(false);
+    }
+  };
+
+  const restoreFromBackup = (backup) => {
+    showConfirm('백업 복원', `${backup.savedAtString} 시점으로 되돌리시겠습니까?\n현재 편집 중인 내용은 사라집니다.`, async () => {
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'quiz_config', 'main_data'), { quizData: backup.quizData });
+        showAlert('복원 성공', '선택한 백업으로 복원되었습니다. 페이지를 새로고침해주세요.');
+        setShowBackupModal(false);
+      } catch (e) {
+        showAlert('복원 실패', '복원 중 오류가 발생했습니다.');
+      }
+    });
+  };
+  // ═══ 엑셀 내보내기 ═══
+  const exportToExcel = () => {
+    try {
+      if (!window.XLSX) {
+        showAlert('오류', 'SheetJS 라이브러리가 로드되지 않았습니다. 페이지를 새로고침해주세요.');
+        return;
+      }
+      
+      const rows = [];
+      Object.entries(editingData || {}).forEach(([bookName, chapters]) => {
+        Object.entries(chapters).forEach(([chapterName, data]) => {
+          const questions = Array.isArray(data) ? data : (data?.questions || []);
+          const synopsis = Array.isArray(data) ? '' : (data?.synopsis || '');
+          const settings = Array.isArray(data) ? null : data?.settings;
+          
+          if (questions.length === 0) {
+            rows.push({
+              '책': bookName, '챕터': chapterName, '유형': '', '질문': '', '답': '', '출제자': '',
+              '줄거리': synopsis,
+              '돋보기출제수': settings?.quota?.['돋보기'] ?? 5,
+              '탐정출제수': settings?.quota?.['탐정'] ?? 3,
+              '거울출제수': settings?.quota?.['거울'] ?? 2,
+            });
+          } else {
+            questions.forEach((q, idx) => {
+              rows.push({
+                '책': bookName,
+                '챕터': chapterName,
+                '유형': q.type || '돋보기',
+                '질문': q.q || '',
+                '답': q.a || '',
+                '출제자': q.createdBy || '',
+                '줄거리': idx === 0 ? synopsis : '',
+                '돋보기출제수': idx === 0 ? (settings?.quota?.['돋보기'] ?? 5) : '',
+                '탐정출제수': idx === 0 ? (settings?.quota?.['탐정'] ?? 3) : '',
+                '거울출제수': idx === 0 ? (settings?.quota?.['거울'] ?? 2) : '',
+              });
+            });
+          }
+        });
+      });
+
+      if (rows.length === 0) {
+        showAlert('알림', '내보낼 데이터가 없습니다.');
+        return;
+      }
+
+      const ws = window.XLSX.utils.json_to_sheet(rows);
+      ws['!cols'] = [
+        { wch: 20 }, { wch: 25 }, { wch: 8 }, { wch: 50 }, { wch: 50 }, { wch: 12 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 10 }
+      ];
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, '퀴즈 데이터');
+
+      const now = new Date();
+      const filename = `퀴즈백업_${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}.xlsx`;
+      window.XLSX.writeFile(wb, filename);
+      
+      showAlert('내보내기 완료', `${filename} 파일로 다운로드되었습니다.`);
+    } catch (e) {
+      console.error(e);
+      showAlert('내보내기 실패', '오류가 발생했습니다: ' + e.message);
+    }
+  };
+
+  // ═══ 엑셀 가져오기 ═══
+  const importFromExcel = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (!window.XLSX) {
+      showAlert('오류', 'SheetJS 라이브러리가 로드되지 않았습니다. 페이지를 새로고침해주세요.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = window.XLSX.read(data, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = window.XLSX.utils.sheet_to_json(ws);
+
+        if (rows.length === 0) {
+          showAlert('가져오기 실패', '엑셀 파일에 데이터가 없습니다.');
+          return;
+        }
+
+        // 엑셀 데이터 → 퀴즈 데이터 구조로 변환
+        const newData = {};
+        rows.forEach(row => {
+          const bookName = row['책']?.toString().trim();
+          const chapterName = row['챕터']?.toString().trim();
+          if (!bookName || !chapterName) return;
+
+          if (!newData[bookName]) newData[bookName] = {};
+          if (!newData[bookName][chapterName]) {
+            newData[bookName][chapterName] = {
+              questions: [],
+              settings: {
+                quota: {
+                  '돋보기': parseInt(row['돋보기출제수']) || 5,
+                  '탐정': parseInt(row['탐정출제수']) || 3,
+                  '거울': parseInt(row['거울출제수']) || 2,
+                },
+                total: 10,
+              },
+              synopsis: row['줄거리']?.toString() || '',
+            };
+            newData[bookName][chapterName].settings.total = 
+              newData[bookName][chapterName].settings.quota['돋보기'] +
+              newData[bookName][chapterName].settings.quota['탐정'] +
+              newData[bookName][chapterName].settings.quota['거울'];
+          }
+
+          const qText = row['질문']?.toString().trim();
+          const aText = row['답']?.toString().trim();
+          if (qText && aText) {
+            const qObj = {
+              type: row['유형']?.toString().trim() || '돋보기',
+              q: qText,
+              a: aText,
+            };
+            const creator = row['출제자']?.toString().trim();
+            if (creator) qObj.createdBy = creator;
+            newData[bookName][chapterName].questions.push(qObj);
+          }
+        });
+
+        const bookCount = Object.keys(newData).length;
+        let qCount = 0;
+        Object.values(newData).forEach(chapters => {
+          Object.values(chapters).forEach(ch => { qCount += ch.questions.length; });
+        });
+
+        if (bookCount === 0) {
+          showAlert('가져오기 실패', '올바른 형식의 데이터를 찾을 수 없습니다.\n엑셀 파일의 헤더가 "책, 챕터, 유형, 질문, 답" 형식인지 확인해주세요.');
+          return;
+        }
+
+        showConfirm(
+          '가져오기 확인',
+          `엑셀에서 ${bookCount}권의 책, 총 ${qCount}개의 문제를 찾았습니다.\n\n[합치기]와 [덮어쓰기] 중 선택하세요:\n\n• 합치기: 기존 데이터에 추가\n• 덮어쓰기: 기존 데이터를 모두 지우고 엑셀 데이터로 교체\n\n[확인]을 누르면 '합치기'로 진행됩니다.`,
+          () => {
+            // 합치기 모드
+            setEditingData(prev => {
+              const merged = JSON.parse(JSON.stringify(prev));
+              Object.entries(newData).forEach(([book, chapters]) => {
+                if (!merged[book]) merged[book] = {};
+                Object.entries(chapters).forEach(([chapter, data]) => {
+                  if (merged[book][chapter]) {
+                    // 챕터 이미 존재 → 질문 병합 (중복 제거)
+                    const existingQs = merged[book][chapter].questions || [];
+                    const existingTexts = new Set(existingQs.map(q => q.q));
+                    const newQs = data.questions.filter(q => !existingTexts.has(q.q));
+                    merged[book][chapter].questions = [...existingQs, ...newQs];
+                    if (data.synopsis && !merged[book][chapter].synopsis) {
+                      merged[book][chapter].synopsis = data.synopsis;
+                    }
+                  } else {
+                    merged[book][chapter] = data;
+                  }
+                });
+              });
+              return merged;
+            });
+            showAlert('가져오기 완료', `${bookCount}권 · ${qCount}문제를 합쳤습니다.\n화면을 확인하고 "저장" 버튼을 눌러 Firebase에 반영해주세요.`);
+          }
+        );
+      } catch (e) {
+        console.error(e);
+        showAlert('가져오기 실패', '엑셀 파일을 읽는 중 오류가 발생했습니다: ' + e.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    event.target.value = ''; // 같은 파일 재업로드 가능하도록 초기화
+  };
   const sortedChapters = (bookName) =>
     Object.keys(editingData[bookName] || {}).sort((a, b) => {
       const numA = parseInt(a.match(/\d+/)?.[0] ?? '9999');
@@ -2134,11 +2347,20 @@ function TeacherManageTab({ quizDataState, db, appId, showConfirm, showAlert, })
         </div>
         <div className="bg-slate-50 p-5 rounded-xl border border-slate-200 mb-6">
           <h3 className="text-sm font-bold text-slate-600 mb-2">새로운 책 추가하기</h3>
-          <div className="flex gap-2">
-            <input type="text" value={newBookName} onChange={(e) => setNewBookName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && addNewBook()}
-              placeholder="책 제목 입력" className="flex-1 p-2 border border-slate-300 rounded-lg outline-none focus:border-indigo-500" />
-            <button onClick={addNewBook} className="bg-slate-800 text-white px-3 py-2 rounded-lg font-bold"><Plus size={18} /></button>
+          <div className="flex gap-2 flex-wrap">
+            <label className="bg-green-100 hover:bg-green-200 text-green-700 px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-colors cursor-pointer">
+              <Upload size={18} /> 엑셀 가져오기
+              <input type="file" accept=".xlsx,.xls" onChange={importFromExcel} className="hidden" />
+            </label>
+            <button onClick={exportToExcel} className="bg-blue-100 hover:bg-blue-200 text-blue-700 px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-colors">
+              <Download size={18} /> 엑셀 내보내기
+            </button>
+            <button onClick={loadBackupList} disabled={loadingBackups} className="bg-amber-100 hover:bg-amber-200 text-amber-700 px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-colors">
+              {loadingBackups ? <Loader2 size={18} className="animate-spin" /> : <History size={18} />} 백업 복원
+            </button>
+            <button onClick={saveToCloud} disabled={isSaving} className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 transition-colors disabled:opacity-50">
+              {isSaving ? <Loader2 size={18} className="animate-spin" /> : <Save size={18} />} 저장
+            </button>
           </div>
         </div>
         <div className="space-y-3">
