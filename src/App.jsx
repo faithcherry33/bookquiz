@@ -261,13 +261,20 @@ export default function App() {
         if (!hasData) {
           try {
             const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'quiz_config', 'main_data');
-            await setDoc(docRef, { quizData: defaultQuizData });
-            setQuizDataState(defaultQuizData);
+            if (Object.keys(defaultQuizData).length > 0) {
+              await setDoc(docRef, { quizData: defaultQuizData });
+              setQuizDataState(defaultQuizData);
+            }
           } catch (e) {
             if (e.code === 'permission-denied') setDbError(true);
           }
         } else {
-          setQuizDataState(loadedData);
+          // 안전장치: loadedData가 undefined이거나 빈 객체이면 state를 업데이트하지 않음
+          if (loadedData && Object.keys(loadedData).length > 0) {
+            setQuizDataState(loadedData);
+          } else {
+            console.warn('⚠️ Firebase에서 빈 데이터가 감지되어 state 업데이트를 건너뜁니다.');
+          }
         }
         setIsLoadingData(false);
       }, (err) => {
@@ -1757,6 +1764,11 @@ function TeacherApproveTab({ studentQuestions, quizDataState, db, appId, showAle
   const [comments, setComments] = useState({});
 
   const handleApprove = (qDoc) => {
+    // 안전장치: quizDataState가 비어있으면 채택 거부
+    if (!quizDataState || Object.keys(quizDataState).length === 0) {
+      showAlert('채택 불가', 'Firebase 데이터가 아직 로드되지 않았습니다.\n페이지를 새로고침 후 다시 시도해주세요.');
+      return;
+    }
     showConfirm('질문 채택', `'${qDoc.studentName}' 학생의 질문을 공식 퀴즈로 등록할까요?`, async () => {
       try {
         const newData = JSON.parse(JSON.stringify(quizDataState));
@@ -2063,11 +2075,51 @@ function TeacherManageTab({ quizDataState, db, appId, showConfirm, showAlert, })
   };
 
   const saveToCloud = async () => {
+    // 안전장치 1: editingData가 비어있으면 저장 거부
+    if (!editingData || Object.keys(editingData).length === 0) {
+      showAlert('저장 거부', '저장할 데이터가 없습니다. 페이지를 새로고침 후 다시 시도해주세요.');
+      return;
+    }
+    
+    // 안전장치 2: 현재 Firebase 데이터와 비교해서 데이터가 대폭 줄어들면 확인 받기
+    const currentBookCount = Object.keys(quizDataState || {}).length;
+    const newBookCount = Object.keys(editingData).length;
+    if (currentBookCount > 0 && newBookCount < currentBookCount) {
+      const confirmed = window.confirm(
+        `⚠️ 경고: 현재 ${currentBookCount}권의 책이 저장되어 있는데, ${newBookCount}권만 저장하려고 합니다.\n\n` +
+        `정말 저장하시겠습니까? (책이 삭제될 수 있습니다)`
+      );
+      if (!confirmed) return;
+    }
+
+    // 안전장치 3: 전체 문제 수가 절반 이하로 줄어들면 경고
+    const countQuestions = (data) => {
+      let total = 0;
+      Object.values(data || {}).forEach(chapters => {
+        Object.values(chapters).forEach(chap => {
+          const qs = Array.isArray(chap) ? chap : (chap?.questions || []);
+          total += qs.length;
+        });
+      });
+      return total;
+    };
+    const currentQCount = countQuestions(quizDataState);
+    const newQCount = countQuestions(editingData);
+    if (currentQCount > 0 && newQCount < currentQCount * 0.5) {
+      if (!window.confirm(`⚠️ 경고\n\n현재 ${currentQCount}개의 문제가 저장되어 있는데, ${newQCount}개만 저장하려고 합니다.\n문제가 절반 이상 사라질 수 있습니다.\n\n정말 저장하시겠습니까?`)) {
+        return;
+      }
+    }
+    
     setIsSaving(true);
     try {
       await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'quiz_config', 'main_data'), { quizData: editingData });
       showAlert('저장 성공', '성공적으로 저장되었습니다!');
-    } catch (err) { showAlert('저장 실패', '오류가 발생했습니다.'); } finally { setIsSaving(false); }
+    } catch (err) { 
+      showAlert('저장 실패', '오류가 발생했습니다.'); 
+    } finally { 
+      setIsSaving(false); 
+    }
   };
 
   // 책 목록 화면
